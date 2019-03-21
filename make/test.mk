@@ -88,6 +88,13 @@ ALL_PKGS_EXCLUDE_PATTERN = 'vendor\|app\|tool\/cli\|design\|client\|test'
 GOANALYSIS_PKGS_EXCLUDE_PATTERN="vendor|app|client|tool/cli"
 GOANALYSIS_DIRS=$(shell go list -f {{.Dir}} ./... | grep -v -E $(GOANALYSIS_PKGS_EXCLUDE_PATTERN))
 
+APP_NAMESPACE ?= devconsole-e2e-test
+NEW_APP_NAMESPACE ?= new-devconsole-e2e-test
+DOCKER_REPO?=quay.io/tkurian
+IMAGE_NAME?=devopsconsole-operator
+TIMESTAMP:=$(shell date +%s)
+SHORT_COMMIT := $(SHORT_COMMIT)-dirty
+TAG?=latest
 #-------------------------------------------------------------------------------
 # Normal test targets
 #
@@ -114,19 +121,38 @@ test-unit: prebuild-check $(SOURCES)
 
 .PHONY: test-e2e
 ## Runs the e2e tests without coverage
-test-e2e: build build-image e2e-setup
+test-e2e: clean-e2e-resources setup-e2e create-resources build build-image deploy-operator-only create-e2e-cr clean-e2e-resources
 	$(call log-info,"Running E2E test: $@")
 	go test ./test/e2e/... -root=$(PWD) -kubeconfig=$(HOME)/.kube/config -globalMan deploy/test/global-manifests.yaml -namespacedMan deploy/test/namespace-manifests.yaml -v -parallel=1 -singleNamespace
 
-.PHONY: e2e-setup
-e2e-setup:  e2e-cleanup
-	oc new-project devconsole-e2e-test || true
+.PHONY: setup-e2e
+setup-e2e:
+	@-oc new-project $(APP_NAMESPACE)
 
-.PHONY: e2e-cleanup
-e2e-cleanup:
-	oc login -u system:admin
-	oc delete project devconsole-e2e-test || true
-
+.PHONY: clean-e2e-resources 
+clean-e2e-resources: clean-resources clean-operator
+	@-oc delete project devconsole-e2e-test || true
+	@-oc delete project new-devconsole-e2e-test || true
+.PHONY: create-e2e-cr
+## Run Operator locally
+create-e2e-cr:
+	@-oc new-project $(NEW_APP_NAMESPACE) 
+	@-oc create -f examples/devopsconsole_v1alpha1_component_cr.yaml
+	@-oc get all,is,component,bc,build,deployment,pod
+	$(eval NAME:=$(shell oc --namespace=devconsole-e2e-test get pods -o json | jq -r .items[0].status.containerStatuses[0].image))
+	@if [ "$(NAME)" == "$(DOCKER_REPO)/$(IMAGE_NAME)" ]; then \
+		echo "[SUCCESS] Image deployed"; \
+	else \
+		echo "[FAIL] Image deployed: expected image 'quay.io/tkurian/devopsconsole-operator' got '$(IMAGE_NAME)'"; \
+		exit 1; \
+	fi
+	$(eval COMPONENT_NAME:=$(shell oc --namespace=new-devconsole-e2e-test get component -o json | jq -r .items[0].metadata.name))
+	@if [ "$(COMPONENT_NAME)" == "myapp" ]; then \
+		echo "[SUCCESS] Create component cr"; \
+	else \
+		echo "[FAIL] Create component cr: expected component name 'myapp' got '$(COMPONENT_NAME)'"; \
+		exit 1; \
+	fi
 #-------------------------------------------------------------------------------
 # Inspect coverage of unit tests, integration tests in either pure
 # console mode or in a browser (*-html).

@@ -6,7 +6,8 @@ SHORT_COMMIT := $(SHORT_COMMIT)-dirty
 endif
 
 TIMESTAMP:=$(shell date +%s)
-TAG?=$(SHORT_COMMIT)-$(TIMESTAMP)
+#TAG?=$(SHORT_COMMIT)-$(TIMESTAMP)
+TAG?=latest
 
 DEPLOY_DIR:=deploy
 
@@ -17,10 +18,7 @@ create-resources:
 	@echo "Creating sub resources..."
 	@echo "Creating CRDs..."
 	@oc create -f $(DEPLOY_DIR)/crds/devopsconsole_v1alpha1_gitsource_crd.yaml
-	@echo "Creating Namespace"
-	@oc create -f $(DEPLOY_DIR)/namespace.yaml
-	@echo "oc project codeready-devconsole"
-	@oc project codeready-devconsole
+	@oc create -f $(DEPLOY_DIR)/crds/devopsconsole_v1alpha1_component_crd.yaml
 	@echo "Creating Service Account"
 	@oc create -f $(DEPLOY_DIR)/service_account.yaml
 	@echo "Creating Role"
@@ -36,37 +34,41 @@ create-cr:
 build-image:
 	docker build -t $(DOCKER_REPO)/$(IMAGE_NAME):$(TAG) -f Dockerfile.dev .
 	docker tag $(DOCKER_REPO)/$(IMAGE_NAME):$(TAG) $(DOCKER_REPO)/$(IMAGE_NAME):test
+	@sed -i 's|REPLACE_IMAGE|$(DOCKER_REPO)/$(IMAGE_NAME)|g' deploy/operator.yaml
 
 .PHONY: deploy-operator-only
 deploy-operator-only:
 	@echo "Creating Deployment for Operator"
-	@cat minishift/operator.yaml | sed s/\:dev/:$(TAG)/ | oc create -f -
-
+	@cat deploy/operator.yaml | sed s/\:dev/:$(TAG)/ | oc create -f -
+	$(eval DEPLOYMENT_META:=$(shell oc --namespace=devconsole-e2e-test get deployments -o json | jq -r .items[0].metadata))
 .PHONY: clean-all
 clean-all:  clean-operator clean-resources
 
 .PHONY: clean-operator
 clean-operator:
 	@echo "Deleting Deployment for Operator"
-	@cat minishift/operator.yaml | sed s/\:dev/:$(TAG)/ | oc delete -f - || true
+	@-cat deploy/operator.yaml | sed s/\:dev/:$(TAG)/ | oc delete -f - || true
 
 .PHONY: clean-resources
 clean-resources:
+	@echo "Logging using system:admin..."
+	@oc login -u system:admin
 	@echo "Deleting sub resources..."
 	@echo "Deleting RoleBinding"
-	@oc delete -f $(DEPLOY_DIR)/role_binding.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/role_binding.yaml || true
 	@echo "Deleting ClusterRoleBinding"
-	@oc delete -f $(DEPLOY_DIR)/cluster_role_binding.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/cluster_role_binding.yaml || true
 	@echo "Deleting Role"
-	@oc delete -f $(DEPLOY_DIR)/role.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/role.yaml || true
 	@echo "Deleting ClusterRole"
-	@oc delete -f $(DEPLOY_DIR)/cluster_role.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/cluster_role.yaml || true
 	@echo "Deleting Service Account"
-	@oc delete -f $(DEPLOY_DIR)/service_account.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/service_account.yaml || true
 	@echo "Deleting Namespace"
-	@oc delete -f $(DEPLOY_DIR)/namespace.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/namespace.yaml || true
 	@echo "Deleting Custom Resource Definitions..."
-	@oc delete -f $(DEPLOY_DIR)/crds/devopsconsole_v1alpha1_gitsource_crd.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/crds/devopsconsole_v1alpha1_gitsource_crd.yaml || true
+	@-oc delete -f $(DEPLOY_DIR)/crds/devopsconsole_v1alpha1_component_crd.yaml || true
 
 .PHONY: deploy-operator
 deploy-operator: build build-image deploy-operator-only
